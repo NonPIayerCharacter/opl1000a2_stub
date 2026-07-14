@@ -10,7 +10,7 @@ CFLAGS = -mcpu=cortex-m3 -std=gnu99 -mthumb -Os -fdata-sections -ffunction-secti
 LDFLAGS = -Tstub.ld -Wl,-Map=output.map -Wl,--gc-sections -flto
 
 SRC_C = opl_stub.c
-OBJ = $(SRC_C:.c=.o) $(SRC_S:.S=.o)
+OBJ = $(SRC_C:.c=.o)
 
 all: stub.elf
 

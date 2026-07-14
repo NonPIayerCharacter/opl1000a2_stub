@@ -12,6 +12,36 @@ typedef enum
 	SPI_IDX_2,
 	SPI_IDX_MAX
 } E_SpiIdx_t;
+
+typedef enum
+{
+	APS_CLKTREE_SRC_RC_BB,
+	APS_CLKTREE_SRC_XTAL,
+	APS_CLKTREE_SRC_XTAL_X2,
+	APS_CLKTREE_SRC_XTAL_X4,
+	APS_CLKTREE_SRC_DECI,
+	APS_CLKTREE_SRC_1P2G_DIV,
+	APS_CLKTREE_SRC_EXTERNAL,
+	APS_CLKTREE_SRC_1P2G_MIN,
+	APS_CLKTREE_SRC_1P2G_078MHZ = APS_CLKTREE_SRC_1P2G_MIN,
+	APS_CLKTREE_SRC_1P2G_081MHZ,
+	APS_CLKTREE_SRC_1P2G_084MHZ,
+	APS_CLKTREE_SRC_1P2G_087MHZ,
+	APS_CLKTREE_SRC_1P2G_090MHZ,
+	APS_CLKTREE_SRC_1P2G_093MHZ,
+	APS_CLKTREE_SRC_1P2G_097MHZ,
+	APS_CLKTREE_SRC_1P2G_101MHZ,
+	APS_CLKTREE_SRC_1P2G_106MHZ,
+	APS_CLKTREE_SRC_1P2G_110MHZ,
+	APS_CLKTREE_SRC_1P2G_116MHZ,
+	APS_CLKTREE_SRC_1P2G_122MHZ,
+	APS_CLKTREE_SRC_1P2G_128MHZ,
+	APS_CLKTREE_SRC_1P2G_135MHZ,
+	APS_CLKTREE_SRC_1P2G_143MHZ,
+	APS_CLKTREE_SRC_1P2G_152MHZ,
+	APS_CLKTREE_SRC_1P2G_MAX = APS_CLKTREE_SRC_1P2G_152MHZ
+} E_ApsClkTreeSrc_t;
+
 typedef uint32_t(*T_Hal_DbgUart_BaudRateSet)(uint32_t u32Baud);
 typedef uint32_t(*T_Hal_DbgUart_DataSend)(uint32_t u32Data);
 typedef uint32_t(*T_Hal_DbgUart_DataRecvTimeOut)(uint32_t* pu32Data, uint32_t u32MilliSec);
@@ -22,6 +52,7 @@ typedef uint32_t(*T_Hal_Flash_4KSectorAddrErase_Internal)(E_SpiIdx_t u32SpiIdx, 
 typedef uint32_t(*T_Hal_Flash_AddrRead_Internal)(E_SpiIdx_t u32SpiIdx, uint32_t u32StartAddr, uint8_t u8UseQuadMode, uint32_t u32Size, uint8_t* pu8Data);
 typedef uint32_t(*T_Hal_Flash_AddrProgram_Internal)(E_SpiIdx_t u32SpiIdx, uint32_t u32StartAddr, uint8_t u8UseQuadMode, uint32_t u32Size, uint8_t* pu8Data);
 typedef uint8_t* (*T_Hal_Sys_OtpRead)(uint16_t u16Offset, uint8_t* u8aBuf, uint16_t u16BufSize);
+typedef uint32_t(*T_Hal_Sys_ApsClkTreeSetup)(E_ApsClkTreeSrc_t eClkTreeSrc, uint8_t u8ClkDivEn, uint8_t u8PclkDivEn);
 
 extern T_Hal_DbgUart_BaudRateSet Hal_DbgUart_BaudRateSet;
 extern T_Hal_DbgUart_DataSend Hal_DbgUart_DataSend;
@@ -33,6 +64,7 @@ extern T_Hal_Flash_AddrRead_Internal          Hal_Flash_AddrRead_Internal;
 extern T_Hal_Flash_4KSectorAddrErase_Internal Hal_Flash_4KSectorAddrErase_Internal;
 extern T_Hal_Flash_AddrProgram_Internal       Hal_Flash_AddrProgram_Internal;
 extern T_Hal_Sys_OtpRead            Hal_Sys_OtpRead;
+extern T_Hal_Sys_ApsClkTreeSetup Hal_Sys_ApsClkTreeSetup;
 
 #define SHA256_BLOCK_LENGTH 64
 typedef struct
@@ -202,6 +234,7 @@ void flasher_stub(void)
 	__asm volatile ("cpsid i" ::: "memory");
 	memset((void*)__bss_start__, 0, (__bss_end__ - __bss_start__));
 	//scrt_sem_create(); // for mbedtls sha256
+	Hal_Sys_ApsClkTreeSetup(APS_CLKTREE_SRC_XTAL_X2, 0, 0);
 	sburner_flash_init();
 	while(1) uart_cmd_parser();
 }
