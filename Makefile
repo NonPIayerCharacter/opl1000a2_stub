@@ -6,10 +6,13 @@ OBJCOPY = $(GCC_BIN)arm-none-eabi-objcopy
 OBJDUMP = $(GCC_BIN)arm-none-eabi-objdump
 SIZE    = $(GCC_BIN)arm-none-eabi-size
 
-CFLAGS = -mcpu=cortex-m3 -std=gnu99 -mthumb -Os -fdata-sections -ffunction-sections -fdiagnostics-color=always -Wall -nostdlib -ffreestanding -flto
+CFLAGS = -mcpu=cortex-m3 -std=gnu99 -mthumb -Os -fdata-sections -ffunction-sections -fdiagnostics-color=always -Wall -nostdlib -ffreestanding -flto -DTDEFL_LESS_MEMORY -DMINIZ_LITTLE_ENDIAN=1 -DMINIZ_USE_UNALIGNED_LOADS_AND_STORES=1 -DNDEBUG -I.
 LDFLAGS = -Tstub.ld -Wl,-Map=output.map -Wl,--gc-sections -flto
 
 SRC_C = opl_stub.c
+SRC_C += ../OpenBK7231T_App/libraries/miniz/miniz.c
+SRC_C += ../OpenBK7231T_App/libraries/miniz/miniz_tdef.c
+SRC_C += ../OpenBK7231T_App/libraries/miniz/miniz_tinfl.c
 OBJ = $(SRC_C:.c=.o)
 
 all: stub.elf

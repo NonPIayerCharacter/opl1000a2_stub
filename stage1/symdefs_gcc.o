@@ -1,0 +1,9 @@
+memmove = 0x00000325;
+memset = 0x00000379;
+memcpy = 0x00075247;
+Hal_DbgUart_BaudRateSet = 0x0040096c;
+Hal_DbgUart_DataSend = 0x0040097c;
+Hal_DbgUart_DataRecv = 0x00400980;
+Hal_DbgUart_DataSendTimeOut = 0x00400984;
+Hal_DbgUart_DataRecvTimeOut = 0x00400988;
+uartBoot = 0x0009a325;

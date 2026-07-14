@@ -2,7 +2,7 @@ ENTRY(flasher_stub)
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x00440400, LENGTH = 0x0000F000
+    RAM (rwx) : ORIGIN = 0x00440000, LENGTH = 0x00000400
 }
 
 SECTIONS
@@ -10,6 +10,11 @@ SECTIONS
     .vectors ORIGIN(RAM) : ALIGN(4)
     {
         KEEP(*(.vectors))
+    } > RAM
+
+    .baud : ALIGN(4)
+    {
+        KEEP(*(.baud))
     } > RAM
 
     .text : ALIGN(4)

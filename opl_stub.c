@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include "../OpenBK7231T_App/libraries/miniz/miniz.h"
 
 typedef enum
 {
@@ -53,6 +54,7 @@ typedef uint32_t(*T_Hal_Flash_AddrRead_Internal)(E_SpiIdx_t u32SpiIdx, uint32_t 
 typedef uint32_t(*T_Hal_Flash_AddrProgram_Internal)(E_SpiIdx_t u32SpiIdx, uint32_t u32StartAddr, uint8_t u8UseQuadMode, uint32_t u32Size, uint8_t* pu8Data);
 typedef uint8_t* (*T_Hal_Sys_OtpRead)(uint16_t u16Offset, uint8_t* u8aBuf, uint16_t u16BufSize);
 typedef uint32_t(*T_Hal_Sys_ApsClkTreeSetup)(E_ApsClkTreeSrc_t eClkTreeSrc, uint8_t u8ClkDivEn, uint8_t u8PclkDivEn);
+typedef uint32_t(*T_Hal_Sys_RetRamTurnOn)(uint32_t u32RetRamIdxs);
 
 extern T_Hal_DbgUart_BaudRateSet Hal_DbgUart_BaudRateSet;
 extern T_Hal_DbgUart_DataSend Hal_DbgUart_DataSend;
@@ -65,6 +67,7 @@ extern T_Hal_Flash_4KSectorAddrErase_Internal Hal_Flash_4KSectorAddrErase_Intern
 extern T_Hal_Flash_AddrProgram_Internal       Hal_Flash_AddrProgram_Internal;
 extern T_Hal_Sys_OtpRead            Hal_Sys_OtpRead;
 extern T_Hal_Sys_ApsClkTreeSetup Hal_Sys_ApsClkTreeSetup;
+extern T_Hal_Sys_RetRamTurnOn     Hal_Sys_RetRamTurnOn;
 
 #define SHA256_BLOCK_LENGTH 64
 typedef struct
@@ -232,9 +235,11 @@ void sburner_flash_init(void);
 void flasher_stub(void)
 {
 	__asm volatile ("cpsid i" ::: "memory");
+	Hal_Sys_RetRamTurnOn(0);
 	memset((void*)__bss_start__, 0, (__bss_end__ - __bss_start__));
 	//scrt_sem_create(); // for mbedtls sha256
 	Hal_Sys_ApsClkTreeSetup(APS_CLKTREE_SRC_XTAL_X2, 0, 0);
+	Hal_DbgUart_BaudRateSet(115200);
 	sburner_flash_init();
 	while(1) uart_cmd_parser();
 }
@@ -800,8 +805,8 @@ void uboot_flash_crc32(void* buf)
 	{
 		uint32_t chunk = remaining > 0x1000 ? 0x1000 : remaining;
 		Hal_Flash_AddrRead_Internal(0, addr, 0, chunk, (uint8_t*)&cmd_data_buf);
-		extern uint32_t crc32(uint8_t* data, uint32_t size);
-		crc += crc32((uint8_t*)&cmd_data_buf, chunk);
+		extern uint32_t crc32_opl(uint8_t* data, uint32_t size);
+		crc += crc32_opl((uint8_t*)&cmd_data_buf, chunk);
 		addr += chunk;
 		remaining -= chunk;
 	}
@@ -825,6 +830,416 @@ void uboot_read_efuse(void)
 	cmd_data_buf[HEAD_SIZE + ACK_msg.data_len] = STATUS_SUCCESS;
 	cmd_data_buf[HEAD_SIZE + ACK_msg.data_len + 1] = uboot_mesage_check((unsigned char*)cmd_data_buf, HEAD_SIZE + ACK_msg.data_len + 1);
 	uart_write((unsigned char*)cmd_data_buf, HEAD_SIZE + ACK_msg.data_len + 2);
+}
+
+void free(void* ptr) {}
+void* malloc(size_t size)
+{
+	return (void*)0x410000;
+}
+
+int mz_deflateInit3(mz_streamp pStream, int level, int method, int window_bits, int mem_level, int strategy)
+{
+	tdefl_compressor* pComp;
+	mz_uint comp_flags = tdefl_create_comp_flags_from_zip_params(level, window_bits, strategy);
+
+	if(!pStream)
+		return MZ_STREAM_ERROR;
+	if((method != MZ_DEFLATED) || ((mem_level < 1) || (mem_level > 9)) || ((window_bits != MZ_DEFAULT_WINDOW_BITS) && (-window_bits != MZ_DEFAULT_WINDOW_BITS)))
+		return MZ_PARAM_ERROR;
+
+	pStream->data_type = 0;
+	pStream->adler = 0;
+	pStream->msg = NULL;
+	pStream->reserved = 0;
+	pStream->total_in = 0;
+	pStream->total_out = 0;
+	if(!pStream->zalloc)
+		pStream->zalloc = miniz_def_alloc_func;
+	if(!pStream->zfree)
+		pStream->zfree = miniz_def_free_func;
+
+	pComp = (tdefl_compressor*)pStream->zalloc(pStream->opaque, 1, sizeof(tdefl_compressor));
+	if(!pComp)
+		return MZ_MEM_ERROR;
+
+	pStream->state = (struct mz_internal_state*)pComp;
+
+	if(tdefl_init(pComp, NULL, NULL, comp_flags) != TDEFL_STATUS_OKAY)
+	{
+		mz_deflateEnd(pStream);
+		return MZ_PARAM_ERROR;
+	}
+
+	return MZ_OK;
+}
+
+void uboot_flash_xmodem_ul_z(void* buf)
+{
+	uint8_t block_num = 1;
+	uint8_t resp = 0;
+	int retry;
+	int ret;
+	bool use_1k = true;
+	bool use_crc = true;
+
+	uint8_t packet[3 + XMODEM_BLOCK_SIZE_1K + 2];
+
+	struct load_cfg_msg cfg_msg;
+	struct message_rec_head* msg = (struct message_rec_head*)buf;
+
+	ACK_msg.status = STATUS_SUCCESS;
+	ACK_msg.magic = ACK_MAGIC;
+	ACK_msg.type = msg->type;
+	ACK_msg.data_len = 0x0000;
+	ACK_msg.CRC8 = uboot_mesage_check((unsigned char*)&ACK_msg, ACK_SIZE - 1);
+
+	uint8_t comp_level = cmd_data_buf[HEAD_SIZE + CFG_SIZE];
+	if(comp_level < 1 || comp_level > 10) comp_level = 5;
+
+	memcpy(&cfg_msg, &(cmd_data_buf[HEAD_SIZE]), CFG_SIZE);
+
+	uart_write((unsigned char*)&ACK_msg, ACK_SIZE);
+
+	int timeout = 10000;
+
+	while(timeout > 0)
+	{
+		if(uart_getc(&resp, 1000) == 0)
+		{
+			if(resp == CRC_MODE)
+			{
+				use_crc = true;
+				use_1k = true;
+				break;
+			}
+
+			if(resp == NAK)
+			{
+				use_crc = false;
+				use_1k = false;
+				break;
+			}
+
+			if(resp == CAN) return;
+		}
+
+		timeout -= 1000;
+	}
+
+	if(timeout <= 0)
+	{
+		uart_putc(CAN);
+		uart_putc(CAN);
+		return;
+	}
+
+	z_stream stream;
+
+	memset(&stream, 0, sizeof(stream));
+
+	const uint8_t src = cfg_msg.addr;
+
+	uint32_t remaining = cfg_msg.len;
+
+	if(mz_deflateInit3(&stream, comp_level, MZ_DEFLATED, -MZ_DEFAULT_WINDOW_BITS, 9, MZ_DEFAULT_STRATEGY) != Z_OK)
+	{
+		return;
+	}
+
+	bool finished = false;
+
+	while(!finished)
+	{
+		uint32_t block_size;
+		uint8_t header;
+
+		if(use_1k)
+		{
+			block_size = XMODEM_BLOCK_SIZE_1K;
+			header = STX;
+		}
+		else
+		{
+			block_size = 128;
+			header = SOH;
+		}
+
+		memset(packet, 0xFF, sizeof(packet));
+
+		packet[0] = header;
+		packet[1] = block_num;
+		packet[2] = ~block_num;
+
+		stream.next_out = &packet[3];
+		stream.avail_out = block_size;
+
+		while(stream.avail_out)
+		{
+			if(stream.avail_in == 0 && remaining)
+			{
+				uint32_t n = remaining;
+
+				if(n > block_size) n = block_size;
+
+				//stream.next_in = (unsigned char*)(src + (cfg_msg.len - remaining));
+				Hal_Flash_AddrRead_Internal(0, src + (cfg_msg.len - remaining), 0, n, (unsigned char*)&cmd_data_buf);
+				stream.next_in = (unsigned char*)(&cmd_data_buf);
+
+				stream.avail_in = n;
+
+				remaining -= n;
+			}
+
+			ret = deflate(&stream, remaining ? Z_NO_FLUSH : Z_FINISH);
+
+			if(ret == Z_STREAM_END)
+			{
+				finished = true;
+				break;
+			}
+
+			if(ret != Z_OK)
+			{
+				deflateEnd(&stream);
+				return;
+			}
+		}
+
+		uint32_t pkt_len = 3 + block_size;
+
+		if(use_crc)
+		{
+			uint16_t crc = crc16_ccitt(&packet[3], block_size);
+
+			packet[pkt_len++] = crc >> 8;
+			packet[pkt_len++] = crc & 0xff;
+		}
+		else
+		{
+			uint8_t sum = 0;
+
+			for(uint32_t i = 0; i < block_size; i++)
+			{
+				sum += packet[3 + i];
+			}
+
+			packet[pkt_len++] = sum;
+		}
+
+		retry = 0;
+
+		while(retry < 10)
+		{
+			uart_write(packet, pkt_len);
+
+			ret = uart_getc(&resp, 5000);
+
+			if(ret == 0 && resp == ACK)
+			{
+				break;
+			}
+
+			retry++;
+		}
+
+		//if(use_1k && retry >= 7)
+		//{
+		//	use_1k = false;
+		//}
+
+		if(retry >= 10)
+		{
+			deflateEnd(&stream);
+
+			uart_putc(CAN);
+			uart_putc(CAN);
+
+			return;
+		}
+
+		block_num++;
+	}
+
+	deflateEnd(&stream);
+
+	retry = 0;
+
+	while(retry < 10)
+	{
+		uart_putc(EOT);
+
+		ret = uart_getc(&resp, 5000);
+
+		if(ret == 0 && resp == ACK)
+		{
+			return;
+		}
+
+		retry++;
+	}
+
+	uart_putc(CAN);
+	uart_putc(CAN);
+}
+
+void uboot_flash_xmodem_dl_z(void* buf)
+{
+	uint8_t header[3] = { 0x00 };
+	uint8_t data[XMODEM_BLOCK_SIZE_1K] = { 0xFF };
+	uint8_t crc_bytes[2] = { 0x00 };
+	uint16_t crc_calc, crc_recv;
+	uint32_t flash_offset = 0;
+	struct load_cfg_msg cfg_msg;
+	struct message_rec_head* msg = (struct message_rec_head*)buf;
+
+	ACK_msg.status = STATUS_SUCCESS;
+	ACK_msg.magic = ACK_MAGIC;
+	ACK_msg.type = msg->type;
+	ACK_msg.data_len = 0x0000;
+	ACK_msg.CRC8 = uboot_mesage_check((unsigned char*)&ACK_msg, ACK_SIZE - 1);
+
+	memcpy(&cfg_msg, &(cmd_data_buf[HEAD_SIZE]), CFG_SIZE);
+
+	if((cfg_msg.addr + cfg_msg.len) > g_flash_size)
+	{
+		ACK_msg.status = STATUS_ADDR_ERROR;
+		ACK_msg.CRC8 = uboot_mesage_check((unsigned char*)&ACK_msg, ACK_SIZE - 1);
+		uart_write((unsigned char*)&ACK_msg, ACK_SIZE);
+		return;
+	}
+
+	uart_write((unsigned char*)&ACK_msg, ACK_SIZE);
+
+	FLASH_EraseByLength(cfg_msg.addr, cfg_msg.len);
+
+	mz_stream stream;
+	memset(&stream, 0, sizeof(stream));
+	if(mz_inflateInit2(&stream, -MZ_DEFAULT_WINDOW_BITS) != MZ_OK)
+	{
+		ACK_msg.status = STATUS_ERROR;
+		uart_write((unsigned char*)&ACK_msg, ACK_SIZE);
+		return;
+	}
+
+	uart_putc(CRC_MODE);
+
+	flash_offset = cfg_msg.addr;
+
+	for(;;)
+	{
+		uint32_t data_size = 0;
+
+		if(uart_getc(&header[0], 3333) != 0)
+		{
+			uart_putc(CRC_MODE);
+			continue;
+		}
+
+		if(header[0] == EOT)
+		{
+			stream.next_in = NULL;
+			stream.avail_in = 0;
+
+			while(1)
+			{
+				stream.next_out = cmd_data_buf;
+				stream.avail_out = sizeof(cmd_data_buf);
+
+				int status = mz_inflate(&stream, MZ_NO_FLUSH);
+				uint32_t produced = sizeof(cmd_data_buf) - stream.avail_out;
+
+				if(produced > 0)
+				{
+					if((flash_offset + produced) > (cfg_msg.addr + cfg_msg.len))
+					{
+						goto abort_decompression;
+					}
+
+					Hal_Flash_AddrProgram_Internal(0, flash_offset, 0, produced, cmd_data_buf);
+					flash_offset += produced;
+				}
+
+				if(status == MZ_STREAM_END) break;
+
+				if(status != MZ_OK && status != MZ_BUF_ERROR)
+					goto abort_decompression;
+			}
+
+			mz_inflateEnd(&stream);
+
+			uart_putc(ACK);
+			return;
+		}
+
+		if(header[0] != STX && header[0] != SOH)
+		{
+			uart_putc(NAK);
+			continue;
+		}
+
+		data_size = (header[0] == STX) ? XMODEM_BLOCK_SIZE_1K : XMODEM_BLOCK_SIZE_128;
+
+		uart_getc(&header[1], 10000);
+		uart_getc(&header[2], 10000);
+
+		if((header[1] + header[2]) != 0xFF)
+		{
+			uart_putc(NAK);
+			continue;
+		}
+
+		for(uint32_t i = 0; i < data_size; i++)
+			uart_getc(&data[i], 20000);
+
+		uart_getc(&crc_bytes[0], 10000);
+		uart_getc(&crc_bytes[1], 10000);
+
+		crc_recv = ((uint16_t)crc_bytes[0] << 8) | crc_bytes[1];
+		crc_calc = crc16_ccitt(data, data_size);
+
+		if(crc_recv != crc_calc)
+		{
+			uart_putc(NAK);
+			continue;
+		}
+
+		stream.next_in = data;
+		stream.avail_in = data_size;
+
+		while(stream.avail_in > 0)
+		{
+			stream.next_out = cmd_data_buf;
+			stream.avail_out = sizeof(cmd_data_buf);
+
+			int status = mz_inflate(&stream, MZ_NO_FLUSH);
+			uint32_t produced = sizeof(cmd_data_buf) - stream.avail_out;
+
+			if(produced > 0)
+			{
+				if((flash_offset + produced) > (cfg_msg.addr + cfg_msg.len))
+				{
+					goto abort_decompression;
+				}
+
+				Hal_Flash_AddrProgram_Internal(0, flash_offset, 0, produced, cmd_data_buf);
+				flash_offset += produced;
+			}
+
+			if(status == MZ_STREAM_END) break;
+
+			if(status != MZ_OK && status != MZ_BUF_ERROR)
+				goto abort_decompression;
+		}
+
+		uart_putc(ACK);
+	}
+
+abort_decompression:
+	mz_inflateEnd(&stream);
+
+	uart_putc(CAN);
+	uart_putc(CAN);
 }
 
 int uart_cmd_parser(void)
@@ -919,12 +1334,12 @@ int uart_cmd_parser(void)
 			case 0x92:
 				uboot_flash_xmodem_ul(false, &cmd_data_buf);
 				break;
-			//case 0x96:
-			//	uboot_flash_xmodem_ul_z(&cmd_data_buf);
-			//	break;
-			//case 0x97:
-			//	uboot_flash_xmodem_dl_z(&cmd_data_buf);
-			//	break;
+			case 0x96:
+				uboot_flash_xmodem_ul_z(&cmd_data_buf);
+				break;
+			case 0x97:
+				uboot_flash_xmodem_dl_z(&cmd_data_buf);
+				break;
 			case 0x98:
 				uboot_flash_xmodem_ul(true, &cmd_data_buf);
 				break;
