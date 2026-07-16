@@ -7,9 +7,9 @@ MEMORY
 
 SECTIONS
 {
-    .vectors ORIGIN(RAM) : ALIGN(4)
+    .init ORIGIN(RAM) : ALIGN(4)
     {
-        KEEP(*(.vectors))
+        KEEP(*(.init))
     } > RAM
 
     .text : ALIGN(4)

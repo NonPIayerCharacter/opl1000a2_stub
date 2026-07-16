@@ -18,8 +18,6 @@ uint32_t Baud = 460800;
 
 void flasher_stub(void);
 
-uint32_t* vectors_ld;
-
 __attribute__((section(".vectors"), used))
 const uint32_t vectors[2] = {
 	0x00450000u,
@@ -71,6 +69,7 @@ void flasher_stub(void)
 	uint32_t offset = 0;
 	uint32_t addr = 0x00440400u;
 
+	__asm volatile ("cpsid i" ::: "memory");
 	Hal_DbgUart_BaudRateSet(Baud);
 
 	uart_putc(CRC_MODE);
@@ -118,7 +117,6 @@ void flasher_stub(void)
 
 		uart_putc(ACK);
 	}
-	vectors_ld = (uint32_t*)0x00440400u;
-	func_t load = (func_t)vectors_ld[1];
+	func_t load = (func_t)0x00440401u;
 	load();
 }

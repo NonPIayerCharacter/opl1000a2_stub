@@ -97,12 +97,6 @@ extern uint8_t __bss_start__[];
 extern uint8_t __bss_end__[];
 void flasher_stub(void);
 
-__attribute__((section(".vectors"), used))
-const uint32_t vectors[2] = {
-	0x00450000u,
-	(uint32_t)flasher_stub
-};
-
 #define MAGIC 						0xA5
 #define ACK_MAGIC 					0x5A 
 
@@ -232,9 +226,9 @@ unsigned char cmd_data_buf[CMD_DATA_MAX_LEN] = { 0 };
 int uart_cmd_parser(void);
 void sburner_flash_init(void);
 
+__attribute__((section(".init"), used))
 void flasher_stub(void)
 {
-	__asm volatile ("cpsid i" ::: "memory");
 	Hal_Sys_RetRamTurnOn(0);
 	memset((void*)__bss_start__, 0, (__bss_end__ - __bss_start__));
 	//scrt_sem_create(); // for mbedtls sha256
@@ -934,13 +928,11 @@ void uboot_flash_xmodem_ul_z(void* buf)
 		return;
 	}
 
+	uint32_t remaining = cfg_msg.len;
+
 	z_stream stream;
 
 	memset(&stream, 0, sizeof(stream));
-
-	const uint8_t src = cfg_msg.addr;
-
-	uint32_t remaining = cfg_msg.len;
 
 	if(mz_deflateInit3(&stream, comp_level, MZ_DEFLATED, -MZ_DEFAULT_WINDOW_BITS, 9, MZ_DEFAULT_STRATEGY) != Z_OK)
 	{
@@ -982,8 +974,7 @@ void uboot_flash_xmodem_ul_z(void* buf)
 
 				if(n > block_size) n = block_size;
 
-				//stream.next_in = (unsigned char*)(src + (cfg_msg.len - remaining));
-				Hal_Flash_AddrRead_Internal(0, src + (cfg_msg.len - remaining), 0, n, (unsigned char*)&cmd_data_buf);
+				Hal_Flash_AddrRead_Internal(0, cfg_msg.addr + (cfg_msg.len - remaining), 0, n, (unsigned char*)&cmd_data_buf);
 				stream.next_in = (unsigned char*)(&cmd_data_buf);
 
 				stream.avail_in = n;
